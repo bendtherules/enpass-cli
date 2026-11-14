@@ -83,6 +83,7 @@ type Args struct {
 	url      *string
 	notes    *string
 	category *string
+	tags     *string
 	force    *bool
 }
 
@@ -114,6 +115,7 @@ func (args *Args) parse() {
 	args.url = flag.String("url", "", "URL (for create/edit).")
 	args.notes = flag.String("notes", "", "Notes (for create/edit).")
 	args.category = flag.String("category", "", "Category (for create/edit).")
+	args.tags = flag.String("tags", "", "Comma-separated tags (for create/edit).")
 	args.force = flag.Bool("force", false, "Skip confirmation prompts.")
 	flag.Parse()
 	args.command = strings.ToLower(flag.Arg(0))
@@ -770,6 +772,7 @@ func createEntry(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
 		URL:      *args.url,
 		Notes:    *args.notes,
 		Category: *args.category,
+		Tags:     splitTags(*args.tags),
 	}
 
 	// Prompt for required fields if not provided
@@ -805,6 +808,7 @@ func editEntry(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
 		URL:      *args.url,
 		Notes:    *args.notes,
 		Category: *args.category,
+		Tags:     splitTags(*args.tags),
 	}
 
 	// Handle password - prompt if flag was passed but empty
@@ -951,6 +955,21 @@ func confirm(logger *logrus.Logger, args *Args, msg string) bool {
 	var response string
 	fmt.Scanln(&response)
 	return strings.ToLower(response) == "y" || strings.ToLower(response) == "yes"
+}
+
+// splitTags turns "work, personal" into {"work", "personal"}.
+//
+// Empty entries are dropped, so an unset -tags flag and a flag with stray
+// commas both mean "no tags". Tag names are used verbatim otherwise; Enpass
+// treats them as folder titles and matches them case-sensitively.
+func splitTags(value string) []string {
+	var tags []string
+	for _, part := range strings.Split(value, ",") {
+		if tag := strings.TrimSpace(part); tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 func isFlagPassed(name string) bool {

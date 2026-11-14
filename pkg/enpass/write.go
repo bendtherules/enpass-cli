@@ -22,6 +22,9 @@ type EntryData struct {
 	URL      string
 	Notes    string
 	Category string
+	// Tags are attached as folder rows plus folder_items links, which is how
+	// the app models tags. They are added, never removed, by this writer.
+	Tags []string
 }
 
 // sqlExecutor is the subset of *sql.DB and *sql.Tx used by the schema helpers.
@@ -243,6 +246,10 @@ func (v *Vault) CreateEntry(entry *EntryData) (string, error) {
 		}
 	}
 
+	if err := ensureTags(tx, entryUUID, entry.Tags, now); err != nil {
+		return "", errors.Wrap(err, "could not attach tags")
+	}
+
 	if err := tx.Commit(); err != nil {
 		return "", errors.Wrap(err, "could not commit transaction")
 	}
@@ -368,6 +375,10 @@ func (v *Vault) UpdateEntry(entryUUID string, updates *EntryData) error {
 
 	if _, err := updateRow(tx, "item", itemColumns, itemValues, "uuid = ?", entryUUID); err != nil {
 		return errors.Wrap(err, "could not update item")
+	}
+
+	if err := ensureTags(tx, entryUUID, updates.Tags, now); err != nil {
+		return errors.Wrap(err, "could not attach tags")
 	}
 
 	if err := tx.Commit(); err != nil {
