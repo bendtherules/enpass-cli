@@ -2,6 +2,7 @@ package enpass
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -129,4 +130,106 @@ func tagLinkExists(q sqlExecutor, folderUUID string, itemUUID string) (bool, err
 	}
 
 	return true, nil
+}
+
+// Tag is one top-level folder row plus its live membership count.
+//
+// Enpass stores tags and ordinary folders in the same `folder` table; the icon
+// is the only discriminator. The app and this writer use "1008" for tags, so
+// IsTag reports that without hiding ordinary folders when the caller asked for
+// them.
+type Tag struct {
+	UUID  string `json:"uuid"`
+	Title string `json:"title"`
+	Items int    `json:"items"`
+	IsTag bool   `json:"is_tag"`
+}
+
+// ListTags returns every live top-level folder with its membership count.
+//
+// includeFolders=false keeps only tags (icon "1008"), which is what the `tags`
+// command shows by default; true also returns ordinary folders, tags first.
+//
+// Example:
+//
+//	tags, err := vault.ListTags(false)
+//	// [{"uuid":"…","title":"work","items":2,"is_tag":true}]
+func (v *Vault) ListTags(includeFolders bool) ([]Tag, error) {
+	if v.db == nil {
+		return nil, errors.New("vault is not initialized")
+	}
+
+	rows, err := v.db.Query(`
+		SELECT f.uuid, f.title, f.icon,
+		       (SELECT COUNT(*) FROM folder_items fi
+		         WHERE fi.folder_uuid = f.uuid AND fi.deleted = 0)
+		  FROM folder f
+		 WHERE f.deleted = 0 AND f.parent_uuid = ''
+		 ORDER BY f.title COLLATE NOCASE`)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not query tags")
+	}
+	defer rows.Close()
+
+	tags := make([]Tag, 0)
+	for rows.Next() {
+		var tag Tag
+		var icon string
+		if err := rows.Scan(&tag.UUID, &tag.Title, &icon, &tag.Items); err != nil {
+			return nil, errors.Wrap(err, "could not read tag row")
+		}
+		tag.IsTag = icon == defaultTagIcon
+		if tag.IsTag || includeFolders {
+			tags = append(tags, tag)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "error iterating tag rows")
+	}
+
+	// Tags first, then folders, each already alphabetical from SQL.
+	sort.SliceStable(tags, func(i, j int) bool {
+		return tags[i].IsTag && !tags[j].IsTag
+	})
+	return tags, nil
+}
+
+// TagsByItem returns tag titles keyed by item UUID, sorted per item.
+//
+// Only tags (icon "1008") are included: an ordinary folder is not a tag even
+// though it lives in the same table. Items without tags are absent from the
+// map.
+//
+// Example:
+//
+//	byItem, err := vault.TagsByItem()
+//	// {"<uuid>": ["personal","work"]}
+func (v *Vault) TagsByItem() (map[string][]string, error) {
+	if v.db == nil {
+		return nil, errors.New("vault is not initialized")
+	}
+
+	rows, err := v.db.Query(`
+		SELECT fi.item_uuid, f.title
+		  FROM folder_items fi
+		  JOIN folder f ON f.uuid = fi.folder_uuid AND f.deleted = 0
+		 WHERE fi.deleted = 0 AND f.icon = ?
+		 ORDER BY f.title COLLATE NOCASE`, defaultTagIcon)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not query item tags")
+	}
+	defer rows.Close()
+
+	byItem := make(map[string][]string)
+	for rows.Next() {
+		var uuid, title string
+		if err := rows.Scan(&uuid, &title); err != nil {
+			return nil, errors.Wrap(err, "could not read item tag row")
+		}
+		byItem[uuid] = append(byItem[uuid], title)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "error iterating item tags")
+	}
+	return byItem, nil
 }

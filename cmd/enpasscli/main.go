@@ -38,6 +38,7 @@ const (
 	cmdRestore = "restore"
 	cmdDelete  = "delete"
 	cmdEnv     = "env"
+	cmdTags    = "tags"
 
 	// defaults
 	defaultLogLevel        = logrus.InfoLevel
@@ -53,6 +54,7 @@ var (
 		cmdVersion: {}, cmdHelp: {}, cmdDryRun: {}, cmdList: {},
 		cmdShow: {}, cmdCopy: {}, cmdPass: {}, cmdUi: {},
 		cmdCreate: {}, cmdEdit: {}, cmdTrash: {}, cmdRestore: {}, cmdDelete: {}, cmdEnv: {},
+		cmdTags: {},
 	}
 )
 
@@ -76,6 +78,7 @@ type Args struct {
 	exact            *bool
 	clipboardPrimary *bool
 	field            *string
+	allFolders       *bool
 	// write command flags
 	title    *string
 	login    *string
@@ -108,6 +111,7 @@ func (args *Args) parse() {
 	args.detailed = flag.Bool("detailed", false, "Show every field of each entry in 'list' and 'show'. Without this flag, only the original summary fields (title, login, category, label, type) are displayed.")
 	args.clipboardPrimary = flag.Bool("clipboardPrimary", false, "Use primary X selection instead of clipboard for the 'copy' command.")
 	args.field = flag.String("field", "", "Field label to extract (default: password). Used with 'env' command.")
+	args.allFolders = flag.Bool("allFolders", false, "Include non-tag folders in the 'tags' command.")
 	// write command flags
 	args.title = flag.String("title", "", "Entry title (for create/edit).")
 	args.login = flag.String("login", "", "Username or email (for create/edit).")
@@ -146,6 +150,7 @@ func printHelp() {
 	fmt.Println("  copy <filter>     Copy password to clipboard")
 	fmt.Println("  pass <filter>     Print password to stdout")
 	fmt.Println("  env VARNAME=filter  Output entry field as KEY=VALUE for shell eval")
+	fmt.Println("  tags [filter]     List tag folders, or the tags on matching entries")
 	fmt.Println("  ui                Interactive terminal UI")
 	fmt.Println("  create            Create a new entry")
 	fmt.Println("  edit <filter>     Edit an existing entry")
@@ -160,6 +165,9 @@ func printHelp() {
 	fmt.Println("only the summary fields (title, login, category, label, type). TOTP fields")
 	fmt.Println("are treated as sensitive: their secret is hidden in list, and show prints")
 	fmt.Println("the current RFC 6238 code alongside the secret.")
+	fmt.Println()
+	fmt.Println("Tags are folder rows with icon 1008. -tags on create/edit attaches them")
+	fmt.Println("(added, never removed); tags lists them; -allFolders includes plain folders.")
 	fmt.Println()
 	fmt.Println("The env command outputs vault values as shell-safe KEY='value' lines.")
 	fmt.Println("Use -field to select a specific field label (default: password).")
@@ -197,14 +205,90 @@ func showEntries(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
 	outputEntriesOrLog(logger, entries, args)
 }
 
+// listTags implements the `tags` command.
+//
+// Without filters it lists top-level folders (tags only unless -allFolders) with
+// their membership counts. With filters it lists matching entries and the tags
+// attached to each. Enpass has no tag column: a tag is a folder row with icon
+// "1008" plus folder_items links.
+func listTags(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
+	if len(args.filters) == 0 {
+		tags, err := vault.ListTags(*args.allFolders)
+		if err != nil {
+			logger.WithError(err).Fatal("could not list tags")
+		}
+		if *args.jsonOutput {
+			data, err := json.Marshal(tags)
+			if err != nil {
+				logger.WithError(err).Fatal("could not marshal JSON data")
+			}
+			fmt.Println(string(data))
+			return
+		}
+		for _, tag := range tags {
+			if *args.allFolders {
+				kind := "folder"
+				if tag.IsTag {
+					kind = "tag"
+				}
+				logger.Printf("%s  %s  %d", tag.Title, kind, tag.Items)
+				continue
+			}
+			logger.Printf("%s  %d", tag.Title, tag.Items)
+		}
+		return
+	}
+
+	entries, err := collectEntries(vault, args, false)
+	if err != nil {
+		logger.WithError(err).Fatal(err.Error())
+	}
+	byItem, err := vault.TagsByItem()
+	if err != nil {
+		logger.WithError(err).Fatal("could not read item tags")
+	}
+
+	type entryTags struct {
+		Title string   `json:"title"`
+		UUID  string   `json:"uuid"`
+		Tags  []string `json:"tags"`
+	}
+	rows := make([]entryTags, 0, len(entries))
+	for _, entry := range entries {
+		tags := byItem[entry.UUID]
+		if tags == nil {
+			tags = []string{}
+		}
+		rows = append(rows, entryTags{Title: entry.Title, UUID: entry.UUID, Tags: tags})
+	}
+
+	if *args.jsonOutput {
+		data, err := json.Marshal(rows)
+		if err != nil {
+			logger.WithError(err).Fatal("could not marshal JSON data")
+		}
+		fmt.Println(string(data))
+		return
+	}
+	for _, row := range rows {
+		if len(row.Tags) == 0 {
+			logger.Printf("%s: (no tags)", row.Title)
+			continue
+		}
+		logger.Printf("%s: %s", row.Title, strings.Join(row.Tags, ", "))
+	}
+}
+
 // entryView is one Enpass item with all of its fields grouped together.
 type entryView struct {
-	UUID     string       `json:"uuid"`
-	Title    string       `json:"title"`
-	Subtitle string       `json:"subtitle,omitempty"`
-	Category string       `json:"category,omitempty"`
-	Trashed  bool         `json:"trashed,omitempty"`
-	Fields   []fieldView  `json:"fields"`
+	UUID     string      `json:"uuid"`
+	Title    string      `json:"title"`
+	Subtitle string      `json:"subtitle,omitempty"`
+	Category string      `json:"category,omitempty"`
+	Template string      `json:"template,omitempty"`
+	Tags     []string    `json:"tags"`
+	Trashed  bool        `json:"trashed,omitempty"`
+	Fields   []fieldView `json:"fields"`
 }
 
 // fieldView is a single field of an entry (username, email, password, ...).
@@ -269,6 +353,7 @@ func collectEntries(vault *enpass.Vault, args *Args, includeSensitive bool) ([]e
 				Title:    c.Title,
 				Subtitle: c.Subtitle,
 				Category: c.Category,
+				Template: c.Template,
 				Trashed:  c.IsTrashed(),
 			}
 			groups[c.UUID] = g
@@ -309,6 +394,21 @@ func collectEntries(vault *enpass.Vault, args *Args, includeSensitive bool) ([]e
 			return strings.ToLower(entries[i].Title) < strings.ToLower(entries[j].Title)
 		})
 	}
+
+	// JSON callers get tags on every entry; the text view is unchanged.
+	if *args.jsonOutput {
+		byItem, terr := vault.TagsByItem()
+		if terr != nil {
+			return nil, terr
+		}
+		for i := range entries {
+			if tags, ok := byItem[entries[i].UUID]; ok {
+				entries[i].Tags = tags
+			} else {
+				entries[i].Tags = []string{}
+			}
+		}
+	}
 	return entries, nil
 }
 
@@ -325,21 +425,27 @@ func outputEntriesOrLog(logger *logrus.Logger, entries []entryView, args *Args) 
 // when present (show mode).
 func outputCompact(logger *logrus.Logger, entries []entryView, args *Args) {
 	type compactRow struct {
-		Title    string `json:"title"`
-		Login    string `json:"login"`
-		Category string `json:"category"`
-		Label    string `json:"label"`
-		Type     string `json:"type"`
-		Password string `json:"password,omitempty"`
+		UUID     string   `json:"uuid"`
+		Title    string   `json:"title"`
+		Login    string   `json:"login"`
+		Category string   `json:"category"`
+		Template string   `json:"template,omitempty"`
+		Tags     []string `json:"tags"`
+		Label    string   `json:"label"`
+		Type     string   `json:"type"`
+		Password string   `json:"password,omitempty"`
 	}
 
 	rows := make([]compactRow, 0, len(entries))
 	for _, e := range entries {
 		anchor := anchorField(e.Fields)
 		row := compactRow{
+			UUID:     e.UUID,
 			Title:    e.Title,
 			Login:    e.Subtitle,
 			Category: e.Category,
+			Template: e.Template,
+			Tags:     e.Tags,
 		}
 		if anchor != nil {
 			row.Label = anchor.Label
@@ -1068,6 +1174,8 @@ func main() {
 		restoreEntry(logger, vault, args)
 	case cmdEnv:
 		envEntries(logger, vault, args)
+	case cmdTags:
+		listTags(logger, vault, args)
 	case cmdDelete:
 		deleteEntry(logger, vault, args)
 	default:

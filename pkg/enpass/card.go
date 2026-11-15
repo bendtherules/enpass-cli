@@ -70,6 +70,7 @@ type Card struct {
 	Trashed   int64
 	Deleted   int64
 	Category  string
+	Template  string
 	Label     string
 	LastUsed  int64
 	Sensitive bool

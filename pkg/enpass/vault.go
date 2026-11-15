@@ -238,6 +238,7 @@ func (v *Vault) GetEntries(cardType string, filters []string) ([]Card, error) {
 			&card.UUID, &card.Type, &card.CreatedAt, &card.UpdatedAt, &card.Title,
 			&card.Subtitle, &card.Note, &card.Trashed, &card.Deleted, &card.Category,
 			&card.Label, &card.value, &card.itemKey, &card.LastUsed, &card.Sensitive, &card.Icon,
+			&card.Template,
 		); err != nil {
 			return nil, errors.Wrap(err, "could not read card from database")
 		}
@@ -292,6 +293,7 @@ func (v *Vault) GetAllFields(cardType string, filters []string) ([]Card, error) 
 			&card.UUID, &card.Type, &card.CreatedAt, &card.UpdatedAt, &card.Title,
 			&card.Subtitle, &card.Note, &card.Trashed, &card.Deleted, &card.Category,
 			&card.Label, &card.value, &card.itemKey, &card.LastUsed, &card.Sensitive, &card.Icon,
+			&card.Template,
 		); err != nil {
 			return nil, errors.Wrap(err, "could not read card from database")
 		}
@@ -336,7 +338,8 @@ func (v *Vault) executeEntryQuery(cardType string, filters []string) (*sql.Rows,
 	query := `
 		SELECT uuid, type, created_at, field_updated_at, title,
 		       subtitle, note, trashed, item.deleted, category,
-		       label, value, key, last_used, sensitive, item.icon
+		       label, value, key, last_used, sensitive, item.icon,
+		       item.template
 		FROM item
 		INNER JOIN itemfield ON uuid = item_uuid
 	`
