@@ -225,6 +225,10 @@ func listTags(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
 			fmt.Println(string(data))
 			return
 		}
+		if len(tags) == 0 {
+			logger.Print("no tags")
+			return
+		}
 		for _, tag := range tags {
 			if *args.allFolders {
 				kind := "folder"
@@ -268,6 +272,10 @@ func listTags(logger *logrus.Logger, vault *enpass.Vault, args *Args) {
 			logger.WithError(err).Fatal("could not marshal JSON data")
 		}
 		fmt.Println(string(data))
+		return
+	}
+	if len(rows) == 0 {
+		logger.Print("no matching entries")
 		return
 	}
 	for _, row := range rows {
